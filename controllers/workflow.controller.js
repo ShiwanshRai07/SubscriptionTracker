@@ -1,59 +1,80 @@
-import dayjs from 'dayjs';
+import dayjs from "dayjs";
+import Subscription from "../models/subscriptions.models.js";
+import { createRequire } from "module";
+import { sendReminderEmail } from "../utils/send-email.js";
 
-
-import {createRequire} from 'module';
 const require = createRequire(import.meta.url);
-const {serve} = require('@upstash/workflow/express');
+const { serve } = require("@upstash/workflow/express");
 
-import Subscription from '../models/subscriptions.models.js';
-import {sendReminderEmail} from '../utils/send-email.js';
+const REMINDERS = [
+    { label: "7 days before reminder", daysBefore: 7 },
+    { label: "5 days before reminder", daysBefore: 5 },
+    { label: "2 days before reminder", daysBefore: 2 },
+    { label: "1 day before reminder", daysBefore: 1 },
+    { label: "Final day reminder", daysBefore: 0 },
+];
 
-const REMINDERS = [7,5,2,1];
+export const sendReminders = serve(async (context) => {
+    console.log("Running Send");
+    const { subscriptionId } = context.requestPayload;
+    const subscription = await fetchSubscription(context, subscriptionId);
 
-export const sendReminders = serve(async( context ) =>{
-    const {subscriptionId} = context.requestPayload;
-    const subscription = await fetchSubscription(context , subscriptionId);
-
-    if(!subscription || subscription.status !== 'active') return;
+    if (!subscription || subscription.status !== "active") return;
 
     const renewalDate = dayjs(subscription.renewalDate);
 
-    if(renewalDate.isBefore(dayjs())){
-        console.log(`Renewal date has passed for subscription ${subscriptionId}. Stopping Workflow.`);
+    if (renewalDate.isBefore(dayjs())) {
+        console.log(
+            `Renewal date has passed for subscription ${subscriptionId}. Stopping Workflow`
+        );
         return;
     }
 
-    for(const daysBefore of REMINDERS){
-        const reminderDate = renewalDate.subtract(daysBefore,'day');
+    for (const reminder of REMINDERS) {
+        const reminderDate = renewalDate.subtract(reminder.daysBefore, "day");
 
-        if(reminderDate.isAfter(dayjs())){
-            await sleepUntilReminder(context,` Reminder ${daysBefore} days before`, reminderDate);
+        if (reminderDate.isAfter(dayjs())) {
+            await sleepUntilReminder(context, reminder.label, reminderDate);
         }
 
-        await triggerReminder( context ,  `${daysBefore} days before reminder` , subscription);
+        if (dayjs().isSame(reminderDate, "day")) {
+            await triggerReminder(context, reminder.label, subscription);
+        }
     }
 });
 
-export const fetchSubscription =  async (context , subscriptionId) => {
-    return await context.run('get subscription', async () =>{
-        return Subscription.findById(subscriptionId).populate('user', 'name email');
-    })
-}
+const fetchSubscription = async (context, subscriptionId) => {
+    return await context.run("get subscription", async () => {
+        return Subscription.findById(subscriptionId).populate("user", "name email");
+    });
+};
 
-const sleepUntilReminder = async (context , label,date) => {
+const sleepUntilReminder = async (context, label, date) => {
     console.log(`Sleeping until ${label} reminder at ${date}`);
     await context.sleepUntil(label, date.toDate());
-}
+};
 
-const triggerReminder = async (context , label , subscription) => {
-    return await context.run(label, async() =>{
+const triggerReminder = async (context, label, subscription) => {
+    console.log("Running trigger");
+
+    return await context.run(label, async () => {
         console.log(`Triggering ${label} reminder`);
 
+        console.log("User data:", subscription.user);
+
+        const email = subscription?.user?.email;
+
+        if (!email || typeof email !== "string") {
+            console.error(
+                `Invalid or missing email for subscription ${subscription._id}`
+            );
+            return;
+        }
+
         await sendReminderEmail({
-          to: subscription.user.email,
+            to: subscription.user.email,
             type: label,
             subscription: subscription,
-        })
-
-    })
-}
+        });
+    });
+};
